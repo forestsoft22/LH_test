@@ -59,10 +59,12 @@ def main():
         else:
             stage.append((i, list(r)))
 
-    # R2 위치코드 표준화
+    # R2 위치코드 표준화 (확정 불가면 R2-c로 제외)
+    stage1 = []
     for i, r in stage:
         loc = r[col["위치코드"]]
         if LOC_STD.match(loc):
+            stage1.append((i, r))
             continue
         m = LOC_DONGHO.match(loc)
         if m:
@@ -73,8 +75,11 @@ def main():
         if new and LOC_STD.match(new):
             fixed.append((i, "R2 위치코드 표준화", loc, new))
             r[col["위치코드"]] = new
+            stage1.append((i, r))
         else:
-            flags.append((i, "R2-c", f"위치코드 `{loc}` 확정 불가 -> 위치별 집계 제외, {{확인 필요: 위치코드}}"))
+            excluded.append((i, "R2-c 위치코드 확정 불가 {확인 필요: 위치코드}", raw_value(i)))
+            rule_excl["R2-c"] += 1
+    stage = stage1
 
     # R3 완전 중복 (원본 값 기준, 표준화 전후와 무관하게 모든 열 동일)
     orig = {i: tuple(rows[i - 1]) for i, _ in stage}
@@ -89,15 +94,18 @@ def main():
             seen[key] = i
             stage2.append((i, r))
 
-    # R4 유사 중복 (접수번호만 다름)
-    groups = {}
+    # R4 유사 중복 (접수번호만 다름): 먼저 접수된 행만 남기고 나중 행 제외
+    first = {}
+    stage3 = []
     for i, r in stage2:
         k = (r[col["접수일"]], r[col["위치코드"]], r[col["공종"]], r[col["하자내용"]])
-        groups.setdefault(k, []).append(i)
-    for k, idx in groups.items():
-        if len(idx) > 1:
-            ids = ", ".join(rows[j - 1][col["접수번호"]] for j in idx)
-            flags.append((idx[0], "R4", f"{'·'.join(map(str, idx))}행({ids}) 유사 중복 -> 포함, {{확인 필요: 재접수 여부}}"))
+        if k in first:
+            excluded.append((i, f"R4 유사 중복 (유지: {first[k]}행) {{확인 필요: 재접수 여부}}", raw_value(i)))
+            rule_excl["R4"] += 1
+        else:
+            first[k] = i
+            stage3.append((i, r))
+    stage2 = stage3
 
     # R5/R6 면적
     area_na = 0
@@ -164,7 +172,7 @@ def main():
     L.append(f"- 행 수 전후: 전 {n_before}행(합계 행 포함) -> 후 {n_after}행\n")
     L.append("## 규칙별 제외 수\n")
     L.append("| 규칙 | 제외 수 | 행 |\n|---|---|---|")
-    for rule in ["R1", "R3", "R6-c"]:
+    for rule in ["R1", "R2-c", "R3", "R4", "R6-c"]:
         idx = [e[0] for e in sorted(excluded) if e[1].startswith(rule)]
         L.append(f"| {rule} | {len(idx)} | {', '.join(map(str, idx)) or '-'} |")
     L.append("\n## 고쳐서 포함한 행\n")
